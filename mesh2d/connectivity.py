@@ -231,10 +231,14 @@ def apply_renumbering(mesh: Mesh, order: np.ndarray) -> Mesh:
     new_nodes = mesh.nodes[order]
     new_markers = mesh.node_markers[order]
     new_triangles = old_to_new[mesh.triangles]
+    new_edges = None if mesh.edges is None else old_to_new[mesh.edges]
     return Mesh(nodes=new_nodes, triangles=new_triangles,
                 node_markers=new_markers,
                 triangle_attributes=None if mesh.triangle_attributes is None
-                else mesh.triangle_attributes.copy())
+                else mesh.triangle_attributes.copy(),
+                edges=new_edges,
+                edge_markers=None if mesh.edge_markers is None else mesh.edge_markers.copy(),
+                triangle_coordinates=new_nodes[new_triangles].copy())
 
 
 def renumber_with_rcm(mesh: Mesh) -> tuple[Mesh, int, int]:

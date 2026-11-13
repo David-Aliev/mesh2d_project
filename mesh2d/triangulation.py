@@ -51,6 +51,9 @@ class Mesh:
     triangles: np.ndarray
     node_markers: np.ndarray
     triangle_attributes: np.ndarray = field(default=None)
+    edges: np.ndarray = field(default=None)
+    edge_markers: np.ndarray = field(default=None)
+    triangle_coordinates: np.ndarray = field(default=None)
 
     # ------------------------------------------------------------------ #
     @property
@@ -68,12 +71,16 @@ class Mesh:
         return np.where(self.node_markers == marker)[0]
 
     def triangle_areas(self) -> np.ndarray:
-        p0 = self.nodes[self.triangles[:, 0]]
-        p1 = self.nodes[self.triangles[:, 1]]
-        p2 = self.nodes[self.triangles[:, 2]]
-        cross = (p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1]) - \
-                (p2[:, 0] - p0[:, 0]) * (p1[:, 1] - p0[:, 1])
-        return 0.5 * np.abs(cross)
+        coords = self.triangle_coordinates
+        if coords is None:
+            coords = self.nodes[self.triangles]
+        side_a = np.linalg.norm(coords[:, 1] - coords[:, 0], axis=1)
+        side_b = np.linalg.norm(coords[:, 2] - coords[:, 1], axis=1)
+        side_c = np.linalg.norm(coords[:, 0] - coords[:, 2], axis=1)
+        semiperimeter = (side_a + side_b + side_c) / 2.0
+        heron_product = semiperimeter * (semiperimeter - side_a) \
+            * (semiperimeter - side_b) * (semiperimeter - side_c)
+        return np.sqrt(np.maximum(heron_product, 0.0))
 
     def triangle_min_angles_deg(self) -> np.ndarray:
         """Мінімальний внутрішній кут (у градусах) кожного трикутника."""
@@ -103,7 +110,26 @@ class Mesh:
             node_markers=self.node_markers.copy(),
             triangle_attributes=None if self.triangle_attributes is None
             else self.triangle_attributes.copy(),
+            edges=None if self.edges is None else self.edges.copy(),
+            edge_markers=None if self.edge_markers is None else self.edge_markers.copy(),
+            triangle_coordinates=None if self.triangle_coordinates is None
+            else self.triangle_coordinates.copy(),
         )
+
+
+def _orient_triangles_ccw(nodes: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """Повертає копію елементів з однаковою орієнтацією проти годинникової стрілки."""
+    triangles = np.asarray(triangles, dtype=int).copy()
+    p0 = nodes[triangles[:, 0]]
+    p1 = nodes[triangles[:, 1]]
+    p2 = nodes[triangles[:, 2]]
+    signed_double_area = (p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1]) - \
+        (p2[:, 0] - p0[:, 0]) * (p1[:, 1] - p0[:, 1])
+    clockwise = signed_double_area < 0.0
+    triangles[clockwise, 1], triangles[clockwise, 2] = (
+        triangles[clockwise, 2], triangles[clockwise, 1]
+    )
+    return triangles
 
 
 class DelaunayMesher:
@@ -158,15 +184,20 @@ class DelaunayMesher:
         result = tr.triangulate(tri_input, switches)
 
         nodes = np.asarray(result["vertices"], dtype=float)
-        triangles = np.asarray(result["triangles"], dtype=int)
+        triangles = _orient_triangles_ccw(nodes, result["triangles"])
         node_markers = np.asarray(result.get("vertex_markers",
                                               np.zeros((nodes.shape[0], 1), dtype=int))).reshape(-1)
         tri_attrs = None
         if "triangle_attributes" in result:
             tri_attrs = np.asarray(result["triangle_attributes"]).reshape(-1)
 
+        edges = np.asarray(result["segments"], dtype=int) if "segments" in result else None
+        edge_markers = (np.asarray(result["segment_markers"]).reshape(-1)
+                        if "segment_markers" in result else None)
         mesh = Mesh(nodes=nodes, triangles=triangles,
-                    node_markers=node_markers, triangle_attributes=tri_attrs)
+                    node_markers=node_markers, triangle_attributes=tri_attrs,
+                    edges=edges, edge_markers=edge_markers)
+        mesh.triangle_coordinates = nodes[triangles].copy()
         return mesh
 
     def refine(self, mesh: Mesh, new_min_angle_deg: float | None = None,
@@ -197,14 +228,15 @@ class DelaunayMesher:
 
         result = tr.triangulate(tri_input, switches)
         nodes = np.asarray(result["vertices"], dtype=float)
-        triangles = np.asarray(result["triangles"], dtype=int)
+        triangles = _orient_triangles_ccw(nodes, result["triangles"])
         node_markers = np.asarray(result.get("vertex_markers",
                                               np.zeros((nodes.shape[0], 1), dtype=int))).reshape(-1)
         tri_attrs = None
         if "triangle_attributes" in result:
             tri_attrs = np.asarray(result["triangle_attributes"]).reshape(-1)
         return Mesh(nodes=nodes, triangles=triangles,
-                    node_markers=node_markers, triangle_attributes=tri_attrs)
+                node_markers=node_markers, triangle_attributes=tri_attrs,
+                triangle_coordinates=nodes[triangles].copy())
 
 
 def verify_delaunay(mesh: Mesh, tol: float = 1e-9) -> tuple[bool, int]:
